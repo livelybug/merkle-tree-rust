@@ -4,9 +4,12 @@
 use sha2::{Sha256, Digest};
 use rand::{thread_rng, Rng};
 use rand::distributions::Alphanumeric;
+use anyhow::Result;  // Redundant, but more readable
+use anyhow::*;
 
-
-/// Parse the 2nd element of an list, then convert it to a integer variable
+/// Parse the 2nd element of the list input, then convert it to an integer.
+///
+/// Return an integer parsed.
 ///
 /// # Examples
 ///
@@ -46,15 +49,17 @@ pub fn parse_args(args: &[String]) -> Result<usize, String> {
     Ok(tx_num)
 }
 
-/// Generate a string list whose size is ```tx_num```
+/// Generate a string list whose size is ```tx_num```.
+///
+/// Return a string list.
 ///
 /// # Examples
 ///
 /// ```
-/// let txs = merkle_tree_rust::generate_txs(99);
+/// let txs = merkle_tree_rust::make_txs(99);
 ///  assert_eq!(99, txs.len());
 /// ```
-pub fn generate_txs(tx_num: usize) -> Vec<String> {
+pub fn make_txs(tx_num: usize) -> Vec<String> {
     let mut txs = Vec::new();
 
     for _i in 0..tx_num {
@@ -82,23 +87,25 @@ fn get_sha256(input: impl AsRef<[u8]> ) -> Bit256{
 /// * Iterate each 2 elements of the top level of the merkle tree, calculate hashing results from each 2 elements, push the hashing results as top level of the merkle tree
 /// * If the top level of the merkle tree has more than one elements, repeat last step. Otherwise, return the merkle tree.
 ///
+/// Return the merkle tree created.
+///
 /// # Examples
 ///
 /// ```
 /// let mut txs = Vec::new();
 /// txs.push("a".into()); txs.push("b".into()); txs.push("c".into());
 /// txs.push("d".into());
-/// let merkle_tree = merkle_tree_rust::create_merkle_tree(&txs).unwrap();
+/// let merkle_tree = merkle_tree_rust::make_merkle_tree(&txs).unwrap();
 /// assert_eq!("58c89d709329eb37285837b042ab6ff72c7c8f74de0446b091b6a0131c102cfd", merkle_tree.last().unwrap()[0]);
 /// ```
 ///
 /// # Errors
 /// An error is returned if the string list input is empty
-pub fn create_merkle_tree(txs: &Vec<String>) -> Result<Vec<Vec<Bit256>>, String>{
+pub fn make_merkle_tree(txs: &Vec<String>) -> Result<Vec<Vec<Bit256>>>{
 // ??&str has better compabilities/performance than String, but difficult to use Vec<&str> here??
     // Cannot accept empty tx list
     if txs.len() == 0 {
-        return Err("String list input cannot be empty!".into());
+        return Err(anyhow!("Creating a merkle tree, string list input cannot be empty!"));
     }
 
     // Compute the hashes of input txs
@@ -109,6 +116,12 @@ pub fn create_merkle_tree(txs: &Vec<String>) -> Result<Vec<Vec<Bit256>>, String>
 
     // The hashes of input tx as level 0 of merkel tree
     let mut merkle_tree = Vec::new();
+
+    // if the number of hashed is odd and greater than 1, duplicate the last hash
+    if tx_hashes.len() > 1 && tx_hashes.len() % 2 == 1 {
+        tx_hashes.push(tx_hashes.last().unwrap().into());
+    }
+
     merkle_tree.push(tx_hashes);
 
     // if the last level has more than 1 leaf, continue calculating
@@ -117,20 +130,104 @@ pub fn create_merkle_tree(txs: &Vec<String>) -> Result<Vec<Vec<Bit256>>, String>
         // println!("current level = {}, hashes = {:?}", merkle_tree.len() - 1, hashes);
         let mut hashes_computed = Vec::new();
         for idx in (0..hashes.len()).step_by(2) {
-            if idx + 1 < hashes.len() { // hashes[idx] is not the last element of an odd sized list
-                let combined_str = format!("{}{}", hashes[idx], hashes[idx + 1]);
-                let res = get_sha256(&combined_str);
-                hashes_computed.push(res);
-            } else {  // hashes[idx] is the last element of an odd sized list
-                let combined_str = hashes[idx].repeat(2); // duplicate the last leaf
-                let res = get_sha256(&combined_str);
-                hashes_computed.push(res);
-            }
+            let combined_str = format!("{}{}", hashes[idx], hashes[idx + 1]);
+            let res = get_sha256(&combined_str);
+            hashes_computed.push(res);
         }
+
+        // if the number of hashed is odd and greater than 1, duplicate the last hash
+        if hashes_computed.len() > 1 && hashes_computed.len() % 2 == 1 {
+            hashes_computed.push(hashes_computed.last().unwrap().into());
+        }
+
         merkle_tree.push(hashes_computed);
     }
+
     println!("last level = {}, root hash = {:?}", merkle_tree.len() - 1, merkle_tree.last().unwrap());
     Ok(merkle_tree)
+}
+
+#[derive(Debug)]
+pub struct ProofElement(i8, Bit256);
+
+/// Create a merkle proof from a string list and one element of the list.
+/// * The merkle proof is a tuple list. Each tuple is (pos, paired_hash), where pos is the position of the paired_hash in a hash pair. pos is 0 if the paired_hash is on the left of the pair.
+///
+/// Return the tuple list.
+///
+/// # Errors
+/// An error is returned if the string list input is empty
+pub fn get_merkle_proof(txs: &Vec<String>, tx: String) -> Result<Vec<ProofElement>> {
+    // Cannot accept empty tx list
+    if txs.len() == 0 {
+        return Err(anyhow!("Creating a merkle proof, string list input cannot be empty!"));
+    }
+
+    // The transaction to be verified through the merkle proof must be existing in the original transaction list of the merkle tree
+    if !txs.contains(&tx) {
+        return Err(anyhow!("Creating a merkle proof of a transaction, but the transaction is not found in the transaction list!"));
+    }
+
+    // Get merkle tree
+    let merkle_tree = make_merkle_tree(txs)?;
+
+    // Create merkle proof - a tuple list
+    let mut proof: Vec<ProofElement> = Vec::new();
+
+    let mut hash = get_sha256(tx);
+    for i in 0..merkle_tree.len() {
+        if merkle_tree[i].len() == 1 {
+            break;
+        }
+
+        let index = merkle_tree[i].iter().position(|r| r.eq(&hash) ).unwrap();
+        let tmp_idx = (index % 2) as i8;
+
+        // If ```temp_idx``` is 1, the proof element tuple is ```(0, merkle_tree[i][index - 1].clone())```
+        // If ```temp_idx``` is 0, the proof element tuple is ```(1, merkle_tree[i][index + 1].clone())```
+        let paired_hash = merkle_tree[i][index + 1 - (tmp_idx * 2) as usize].clone();
+        proof.push(ProofElement((tmp_idx - 1) * -1, paired_hash));
+
+        // Get the hash linked to current hash and paired hash
+        hash = merkle_tree[i + 1][(index - tmp_idx as usize) / 2].clone();
+    }
+
+    Ok(proof)
+}
+
+/// Calculate along the merkle proof input to get the merkle root.
+///
+/// Return the merkle root.
+///
+/// # Examples
+///
+/// ```
+/// let mut txs = Vec::new();
+/// txs.push("a".into()); txs.push("b".into()); txs.push("c".into());
+/// txs.push("d".into());
+/// let proof = merkle_tree_rust::get_merkle_proof(&txs, "a".into()).unwrap();
+/// let root = merkle_tree_rust::get_root_by_proof("a".into(), proof).unwrap();
+/// assert_eq!("58c89d709329eb37285837b042ab6ff72c7c8f74de0446b091b6a0131c102cfd" ,root);
+/// ```
+///
+/// # Errors
+/// An error is returned if the merkle proof input is empty.
+pub fn get_root_by_proof(tx: String, proof: Vec<ProofElement>) -> Result<Bit256> {
+    // Cannot accept empty tx list
+    if proof.len() == 0 {
+        return Err(anyhow!("Calculate along the merkle proof to get the merkle root, the merkle proof cannot be empty!"));
+    }
+
+    // hash the tx
+    let mut hash = get_sha256(tx);
+
+    // verify through the proof
+    for pe in proof {
+        let concat = if pe.0 == 0 { format!("{}{}", pe.1, hash) } else { format!("{}{}",hash, pe.1) };
+        hash = get_sha256(concat);
+    }
+
+    Ok(hash)
 }
 
 
@@ -142,44 +239,70 @@ mod tests {
     fn test_args_parser() {
         let args = vec!["a".into(), "b".into()];
         let err = parse_args(&args).unwrap_err();
-        assert_eq!(err, "invalid digit found in string, command example:\n\ncargo run 100");
+        assert_eq!("invalid digit found in string, command example:\n\ncargo run 100", err);
 
         let args = vec!["a".into(), "0".into()];
         let err = parse_args(&args).unwrap_err();
-        assert_eq!(err, "The argument must be an interger greater than 0!");
+        assert_eq!("The argument must be an interger greater than 0!", err);
 
         let args = vec!["a".into()];
         let err = parse_args(&args).unwrap_err();
-        assert_eq!(err, "At least one argument is expected, command example:\n\ncargo run 100");
+        assert_eq!("At least one argument is expected, command example:\n\ncargo run 100", err);
 
         let args = vec!["a".into(), "100".into()];
         let tx_num = parse_args(&args).unwrap();
-        assert_eq!(tx_num, 100);
+        assert_eq!(100, tx_num);
     }
 
     #[test]
     fn test_txs_gen() {
-        let txs = generate_txs(99);
+        let txs = make_txs(99);
         assert_eq!(99, txs.len());
     }
 
     #[test]
     fn test_merkle_tree() {
         let mut txs = Vec::new();
-        let err = create_merkle_tree(&txs).unwrap_err();
-        assert_eq!("String list input cannot be empty!", err);
+        let err = make_merkle_tree(&txs).unwrap_err();
+        assert_eq!("Creating a merkle tree, string list input cannot be empty!", err.to_string());
 
         txs.push("a".into()); txs.push("b".into()); txs.push("c".into());
         txs.push("d".into());
-        let merkle_tree = create_merkle_tree(&txs).unwrap();
+        let merkle_tree = make_merkle_tree(&txs).unwrap();
         assert_eq!("58c89d709329eb37285837b042ab6ff72c7c8f74de0446b091b6a0131c102cfd", merkle_tree.last().unwrap()[0]);
 
         txs.push("e".into());
-        let merkle_tree = create_merkle_tree(&txs).unwrap();
+        let merkle_tree = make_merkle_tree(&txs).unwrap();
         assert_eq!("3615e586768e706351e326736e446554c49123d0e24c169d3ecf9b791a82636b", merkle_tree.last().unwrap()[0]);
 
         txs.push("f".into()); txs.push("g".into());
-        let merkle_tree = create_merkle_tree(&txs).unwrap();
+        let merkle_tree = make_merkle_tree(&txs).unwrap();
         assert_eq!("61198f165d0f10dc1cd3f688bb7c5cf9f0d6f892532a6ebd984fb9b6bb124dd8", merkle_tree.last().unwrap()[0]);
+    }
+
+    #[test]
+    fn test_get_merkle_proof() {
+        let mut txs = Vec::new();
+        let err = get_merkle_proof(&txs, "a".into()).unwrap_err();
+        assert_eq!("Creating a merkle proof, string list input cannot be empty!", err.to_string());
+
+        txs.push("a".into()); txs.push("b".into()); txs.push("c".into());
+        txs.push("d".into());
+        let err = get_merkle_proof(&txs, "z".into()).unwrap_err();
+        assert_eq!("Creating a merkle proof of a transaction, but the transaction is not found in the transaction list!", err.to_string());
+
+        let proof = get_merkle_proof(&txs, "a".into()).unwrap();
+        let root = get_root_by_proof("a".into(), proof).unwrap();
+        assert_eq!("58c89d709329eb37285837b042ab6ff72c7c8f74de0446b091b6a0131c102cfd" ,root);
+
+        txs.push("e".into());
+        let proof = get_merkle_proof(&txs, "e".into()).unwrap();
+        let root = get_root_by_proof("e".into(), proof).unwrap();
+        assert_eq!("3615e586768e706351e326736e446554c49123d0e24c169d3ecf9b791a82636b", root);
+
+        txs.push("f".into()); txs.push("g".into());
+        let proof = get_merkle_proof(&txs, "f".into()).unwrap();
+        let root = get_root_by_proof("f".into(), proof).unwrap();
+        assert_eq!("61198f165d0f10dc1cd3f688bb7c5cf9f0d6f892532a6ebd984fb9b6bb124dd8", root);
     }
 }
