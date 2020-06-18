@@ -81,6 +81,14 @@ fn get_sha256(input: impl AsRef<[u8]> ) -> Bit256{
     hex::encode(hasher.finalize().as_slice())  // ? sha2 crate have method to convert result to hex string?
 }
 
+// if the number of hashed is odd and greater than 1, duplicate the last hash
+fn dupl_last_odd_list(mut hashes: Vec<Bit256>) -> Vec<Bit256> {
+    if hashes.len() > 1 && hashes.len() % 2 == 1 {
+        hashes.push(hashes.last().unwrap().into());
+    }
+    hashes
+}
+
 /// Create a merkle tree from a string list by the following steps:
 /// * Hash each element of the string list, make a new list from the hashing results.
 /// * Take the new list as level 0 of the merkle tree
@@ -118,9 +126,7 @@ pub fn make_merkle_tree(txs: &Vec<String>) -> Result<Vec<Vec<Bit256>>>{
     let mut merkle_tree = Vec::new();
 
     // if the number of hashed is odd and greater than 1, duplicate the last hash
-    if tx_hashes.len() > 1 && tx_hashes.len() % 2 == 1 {
-        tx_hashes.push(tx_hashes.last().unwrap().into());
-    }
+    tx_hashes = dupl_last_odd_list(tx_hashes);
 
     merkle_tree.push(tx_hashes);
 
@@ -136,9 +142,7 @@ pub fn make_merkle_tree(txs: &Vec<String>) -> Result<Vec<Vec<Bit256>>>{
         }
 
         // if the number of hashed is odd and greater than 1, duplicate the last hash
-        if hashes_computed.len() > 1 && hashes_computed.len() % 2 == 1 {
-            hashes_computed.push(hashes_computed.last().unwrap().into());
-        }
+        hashes_computed = dupl_last_odd_list(hashes_computed);
 
         merkle_tree.push(hashes_computed);
     }
@@ -149,6 +153,31 @@ pub fn make_merkle_tree(txs: &Vec<String>) -> Result<Vec<Vec<Bit256>>>{
 
 #[derive(Debug)]
 pub struct ProofElement(i8, Bit256);
+
+fn _get_merkle_proof(merkle_tree: &Vec<Vec<String>>, hash: &Bit256, mut proof: Vec<ProofElement>, mut level: usize) -> Vec<ProofElement> {
+    if merkle_tree[level].len() == 1 {
+        return proof;
+    }
+
+    // Get the index of current hash from the current level of merkle tree
+    let index = merkle_tree[level].iter().position(|r| r.eq(hash) ).unwrap();
+
+    let tmp_idx = (index % 2) as i8;
+
+    // If ```temp_idx``` is 1, the proof element tuple is ```(0, merkle_tree[level][index - 1].clone())```
+    // If ```temp_idx``` is 0, the proof element tuple is ```(1, merkle_tree[level][index + 1].clone())```
+    let paired_hash = merkle_tree[level][index + 1 - (tmp_idx * 2) as usize].clone();
+    proof.push(ProofElement((tmp_idx - 1) * -1, paired_hash));
+
+    // Get the hash linked to current hash and paired hash
+    let _hash = merkle_tree[level + 1][(index - tmp_idx as usize) / 2].clone();
+
+    if level + 1 >= merkle_tree.len() {
+        panic!("Something wrong when getting merkle proof, index out of boundary!")
+    }
+    level = level + 1;
+    _get_merkle_proof(merkle_tree, &_hash, proof, level)
+}
 
 /// Create a merkle proof from a string list and one element of the list.
 /// * The merkle proof is a tuple list. Each tuple is (pos, paired_hash), where pos is the position of the paired_hash in a hash pair. pos is 0 if the paired_hash is on the left of the pair.
@@ -174,23 +203,8 @@ pub fn get_merkle_proof(txs: &Vec<String>, tx: String) -> Result<Vec<ProofElemen
     // Create merkle proof - a tuple list
     let mut proof: Vec<ProofElement> = Vec::new();
 
-    let mut hash = get_sha256(tx);
-    for i in 0..merkle_tree.len() {
-        if merkle_tree[i].len() == 1 {
-            break;
-        }
-
-        let index = merkle_tree[i].iter().position(|r| r.eq(&hash) ).unwrap();
-        let tmp_idx = (index % 2) as i8;
-
-        // If ```temp_idx``` is 1, the proof element tuple is ```(0, merkle_tree[i][index - 1].clone())```
-        // If ```temp_idx``` is 0, the proof element tuple is ```(1, merkle_tree[i][index + 1].clone())```
-        let paired_hash = merkle_tree[i][index + 1 - (tmp_idx * 2) as usize].clone();
-        proof.push(ProofElement((tmp_idx - 1) * -1, paired_hash));
-
-        // Get the hash linked to current hash and paired hash
-        hash = merkle_tree[i + 1][(index - tmp_idx as usize) / 2].clone();
-    }
+    let hash = get_sha256(tx);
+    proof = _get_merkle_proof(&merkle_tree, &hash, proof, 0);
 
     Ok(proof)
 }
@@ -212,7 +226,7 @@ pub fn get_merkle_proof(txs: &Vec<String>, tx: String) -> Result<Vec<ProofElemen
 ///
 /// # Errors
 /// An error is returned if the merkle proof input is empty.
-pub fn get_root_by_proof(tx: String, proof: Vec<ProofElement>) -> Result<Bit256> {
+pub fn get_root_by_proof(tx: &str, proof: Vec<ProofElement>) -> Result<Bit256> {
     // Cannot accept empty tx list
     if proof.len() == 0 {
         return Err(anyhow!("Calculate along the merkle proof to get the merkle root, the merkle proof cannot be empty!"));
@@ -292,17 +306,17 @@ mod tests {
         assert_eq!("Creating a merkle proof of a transaction, but the transaction is not found in the transaction list!", err.to_string());
 
         let proof = get_merkle_proof(&txs, "a".into()).unwrap();
-        let root = get_root_by_proof("a".into(), proof).unwrap();
+        let root = get_root_by_proof("a", proof).unwrap();
         assert_eq!("58c89d709329eb37285837b042ab6ff72c7c8f74de0446b091b6a0131c102cfd" ,root);
 
         txs.push("e".into());
         let proof = get_merkle_proof(&txs, "e".into()).unwrap();
-        let root = get_root_by_proof("e".into(), proof).unwrap();
+        let root = get_root_by_proof("e", proof).unwrap();
         assert_eq!("3615e586768e706351e326736e446554c49123d0e24c169d3ecf9b791a82636b", root);
 
         txs.push("f".into()); txs.push("g".into());
         let proof = get_merkle_proof(&txs, "f".into()).unwrap();
-        let root = get_root_by_proof("f".into(), proof).unwrap();
+        let root = get_root_by_proof("f", proof).unwrap();
         assert_eq!("61198f165d0f10dc1cd3f688bb7c5cf9f0d6f892532a6ebd984fb9b6bb124dd8", root);
     }
 }
