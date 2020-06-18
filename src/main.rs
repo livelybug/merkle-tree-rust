@@ -19,8 +19,8 @@ fn main() {
     });
 
     // Get merkle proof of a tx from a merkle tree
-    let proof = merkle_tree_rust::get_merkle_proof(&txs, txs.last().unwrap().clone()).unwrap();
+    let proof = merkle_tree_rust::get_merkle_proof(&txs, txs.last().unwrap().clone().as_str()).unwrap();
     // Verify the tx by merkle proof
-    let root = merkle_tree_rust::get_root_by_proof(txs.last().unwrap().clone().as_ref(), proof).unwrap();
+    let root = merkle_tree_rust::get_root_by_proof(txs.last().unwrap().clone().as_ref(), &proof).unwrap();
     assert_eq!(root, merkle_tree.last().unwrap()[0]);
 }

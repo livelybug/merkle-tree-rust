@@ -110,7 +110,6 @@ fn dupl_last_odd_list(mut hashes: Vec<Bit256>) -> Vec<Bit256> {
 /// # Errors
 /// An error is returned if the string list input is empty
 pub fn make_merkle_tree(txs: &Vec<String>) -> Result<Vec<Vec<Bit256>>>{
-// ??&str has better compabilities/performance than String, but difficult to use Vec<&str> here??
     // Cannot accept empty tx list
     if txs.len() == 0 {
         return Err(anyhow!("Creating a merkle tree, string list input cannot be empty!"));
@@ -186,14 +185,14 @@ fn _get_merkle_proof(merkle_tree: &Vec<Vec<String>>, hash: &Bit256, mut proof: V
 ///
 /// # Errors
 /// An error is returned if the string list input is empty
-pub fn get_merkle_proof(txs: &Vec<String>, tx: String) -> Result<Vec<ProofElement>> {
+pub fn get_merkle_proof(txs: &Vec<String>, tx: &str) -> Result<Vec<ProofElement>> {
     // Cannot accept empty tx list
     if txs.len() == 0 {
         return Err(anyhow!("Creating a merkle proof, string list input cannot be empty!"));
     }
 
     // The transaction to be verified through the merkle proof must be existing in the original transaction list of the merkle tree
-    if !txs.contains(&tx) {
+    if !txs.contains(&tx.into()) {
         return Err(anyhow!("Creating a merkle proof of a transaction, but the transaction is not found in the transaction list!"));
     }
 
@@ -219,14 +218,14 @@ pub fn get_merkle_proof(txs: &Vec<String>, tx: String) -> Result<Vec<ProofElemen
 /// let mut txs = Vec::new();
 /// txs.push("a".into()); txs.push("b".into()); txs.push("c".into());
 /// txs.push("d".into());
-/// let proof = merkle_tree_rust::get_merkle_proof(&txs, "a".into()).unwrap();
-/// let root = merkle_tree_rust::get_root_by_proof("a".into(), proof).unwrap();
+/// let proof = merkle_tree_rust::get_merkle_proof(&txs, "a").unwrap();
+/// let root = merkle_tree_rust::get_root_by_proof("a", &proof).unwrap();
 /// assert_eq!("58c89d709329eb37285837b042ab6ff72c7c8f74de0446b091b6a0131c102cfd" ,root);
 /// ```
 ///
 /// # Errors
 /// An error is returned if the merkle proof input is empty.
-pub fn get_root_by_proof(tx: &str, proof: Vec<ProofElement>) -> Result<Bit256> {
+pub fn get_root_by_proof(tx: &str, proof: &Vec<ProofElement>) -> Result<Bit256> {
     // Cannot accept empty tx list
     if proof.len() == 0 {
         return Err(anyhow!("Calculate along the merkle proof to get the merkle root, the merkle proof cannot be empty!"));
@@ -297,26 +296,26 @@ mod tests {
     #[test]
     fn test_get_merkle_proof() {
         let mut txs = Vec::new();
-        let err = get_merkle_proof(&txs, "a".into()).unwrap_err();
+        let err = get_merkle_proof(&txs, "a").unwrap_err();
         assert_eq!("Creating a merkle proof, string list input cannot be empty!", err.to_string());
 
         txs.push("a".into()); txs.push("b".into()); txs.push("c".into());
         txs.push("d".into());
-        let err = get_merkle_proof(&txs, "z".into()).unwrap_err();
+        let err = get_merkle_proof(&txs, "z").unwrap_err();
         assert_eq!("Creating a merkle proof of a transaction, but the transaction is not found in the transaction list!", err.to_string());
 
-        let proof = get_merkle_proof(&txs, "a".into()).unwrap();
-        let root = get_root_by_proof("a", proof).unwrap();
+        let proof = get_merkle_proof(&txs, "a").unwrap();
+        let root = get_root_by_proof("a", &proof).unwrap();
         assert_eq!("58c89d709329eb37285837b042ab6ff72c7c8f74de0446b091b6a0131c102cfd" ,root);
 
         txs.push("e".into());
-        let proof = get_merkle_proof(&txs, "e".into()).unwrap();
-        let root = get_root_by_proof("e", proof).unwrap();
+        let proof = get_merkle_proof(&txs, "e").unwrap();
+        let root = get_root_by_proof("e", &proof).unwrap();
         assert_eq!("3615e586768e706351e326736e446554c49123d0e24c169d3ecf9b791a82636b", root);
 
         txs.push("f".into()); txs.push("g".into());
-        let proof = get_merkle_proof(&txs, "f".into()).unwrap();
-        let root = get_root_by_proof("f", proof).unwrap();
+        let proof = get_merkle_proof(&txs, "f").unwrap();
+        let root = get_root_by_proof("f", &proof).unwrap();
         assert_eq!("61198f165d0f10dc1cd3f688bb7c5cf9f0d6f892532a6ebd984fb9b6bb124dd8", root);
     }
 }
