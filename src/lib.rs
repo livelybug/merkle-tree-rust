@@ -6,6 +6,7 @@ use rand::{thread_rng, Rng};
 use rand::distributions::Alphanumeric;
 use anyhow::Result;  // Redundant, but more readable
 use anyhow::*;
+use rayon::ThreadPoolBuilder;
 
 /// Parse the 2nd element of the list input, then convert it to an integer.
 ///
@@ -59,13 +60,13 @@ pub fn parse_args(args: &[String]) -> Result<usize, String> {
 /// let txs = merkle_tree_rust::make_txs(99);
 ///  assert_eq!(99, txs.len());
 /// ```
-pub fn make_txs(tx_num: usize) -> Vec<String> {
+pub fn make_txs(tx_num: usize) -> Vec<Bit256> {
     let mut txs = Vec::new();
 
     for _i in 0..tx_num {
         let rand_string: String = thread_rng()
             .sample_iter(&Alphanumeric)
-            .take(32)
+            .take(64)
             .collect();
         txs.push(rand_string);
     }
@@ -73,7 +74,8 @@ pub fn make_txs(tx_num: usize) -> Vec<String> {
     txs
 }
 
-type Bit256 = String;
+/// The type for the result of sha256 hash.
+pub type Bit256 = String;
 
 fn get_sha256(input: impl AsRef<[u8]> ) -> Bit256{
     let mut hasher = Sha256::new();
@@ -92,10 +94,22 @@ fn dupl_last_odd_list(mut hashes: Vec<Bit256>) -> Vec<Bit256> {
 /// Create a merkle tree from a string list by the following steps:
 /// * Hash each element of the string list, make a new list from the hashing results.
 /// * Take the new list as level 0 of the merkle tree
-/// * Iterate each 2 elements of the top level of the merkle tree, calculate hashing results from each 2 elements, push the hashing results as top level of the merkle tree
-/// * If the top level of the merkle tree has more than one elements, repeat last step. Otherwise, return the merkle tree.
+/// * Iterate each 2 elements of the top level of the merkle tree, calculate hashing results from each 2 elements, push the hashing results as "latest" top level of the merkle tree
+/// * If the top level of the merkle tree has more than one elements, repeat previous step. Otherwise, return the merkle tree.
 ///
 /// Return the merkle tree created.
+///
+/// # Multi-threaded
+/// The multi-threaded attemp by rayon's threadpool is not successful. Although hashing process is running in new thread, the whole algorithm runs sequentially. It would be easier to achive if the ```pool.install``` returns something like ```JoinHandle``` or ```Future```.
+///
+/// The single threaded version [here](https://github.com/livelybug/merkle-tree-rust/commit/97395e8055ae3f82350102142e97c6a31e4c823b), the main part of algorithm looks like:
+/// ```
+///         for idx in (0..hashes.len()).step_by(2) {
+///             let combined_str = format!("{}{}", hashes[idx], hashes[idx + 1]);
+///             let res = get_sha256(&combined_str);
+///             hashes_computed.push(res);
+///         }
+/// ```
 ///
 /// # Examples
 ///
@@ -129,18 +143,26 @@ pub fn make_merkle_tree(txs: &Vec<String>) -> Result<Vec<Vec<Bit256>>>{
 
     merkle_tree.push(tx_hashes);
 
-    // if the last level has more than 1 leaf, continue calculating
+    let pool = ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+
+    // if the last level has more than 1 element, continue calculating
     while merkle_tree.last().unwrap().len() > 1 {
         let hashes = merkle_tree.last().unwrap();
         // println!("current level = {}, hashes = {:?}", merkle_tree.len() - 1, hashes);
-        let mut hashes_computed = Vec::new();
+
+        let mut hashes_computed = make_txs(hashes.len() / 2); // pre-allocate the vector which will store the hash of 2 conbined hashes
+
         for idx in (0..hashes.len()).step_by(2) {
-            let combined_str = format!("{}{}", hashes[idx], hashes[idx + 1]);
-            let res = get_sha256(&combined_str);
-            hashes_computed.push(res);
+            let left_hash = hashes[idx].clone();
+            let right_hash = hashes[idx + 1].clone();
+            hashes_computed[idx / 2] = pool.install(move || -> Bit256 {
+                let combined_str = format!("{}{}", left_hash, right_hash);
+                let res = get_sha256(&combined_str);
+                res
+            });
         }
 
-        // if the number of hashed is odd and greater than 1, duplicate the last hash
+        // if the number of hashes is odd and greater than 1, duplicate the last hash
         hashes_computed = dupl_last_odd_list(hashes_computed);
 
         merkle_tree.push(hashes_computed);
@@ -150,6 +172,7 @@ pub fn make_merkle_tree(txs: &Vec<String>) -> Result<Vec<Vec<Bit256>>>{
     Ok(merkle_tree)
 }
 
+/// The type for element of merkle proof.
 #[derive(Debug)]
 pub struct ProofElement(i8, Bit256);
 
@@ -179,7 +202,7 @@ fn _get_merkle_proof(merkle_tree: &Vec<Vec<String>>, hash: &Bit256, mut proof: V
 }
 
 /// Create a merkle proof from a string list and one element of the list.
-/// * The merkle proof is a tuple list. Each tuple is (pos, paired_hash), where pos is the position of the paired_hash in a hash pair. pos is 0 if the paired_hash is on the left of the pair.
+/// * The merkle proof is a tuple list. Each tuple is (pos, paired_hash), where ```pos``` is the position of the paired_hash in the pair to be hashed. ```pos``` is 0 if the paired_hash is on the left of the pair.
 ///
 /// Return the tuple list.
 ///
