@@ -6,7 +6,7 @@ use rand::{thread_rng, Rng};
 use rand::distributions::Alphanumeric;
 use anyhow::Result;  // Redundant, but more readable
 use anyhow::*;
-use rayon::ThreadPoolBuilder;
+use rayon::prelude::*;
 
 /// Parse the 2nd element of the list input, then convert it to an integer.
 ///
@@ -103,7 +103,7 @@ fn dupl_last_odd_list(mut hashes: Vec<Bit256>) -> Vec<Bit256> {
 /// The multi-threaded attemp by rayon's threadpool is not successful. Although hashing process is running in new thread, the whole algorithm runs sequentially. It would be easier to achive if the ```pool.install``` returns something like ```JoinHandle``` or ```Future```.
 ///
 /// The single threaded version [here](https://github.com/livelybug/merkle-tree-rust/commit/97395e8055ae3f82350102142e97c6a31e4c823b), the main part of algorithm looks like:
-/// ```
+/// ```txt
 ///         for idx in (0..hashes.len()).step_by(2) {
 ///             let combined_str = format!("{}{}", hashes[idx], hashes[idx + 1]);
 ///             let res = get_sha256(&combined_str);
@@ -143,24 +143,15 @@ pub fn make_merkle_tree(txs: &Vec<String>) -> Result<Vec<Vec<Bit256>>>{
 
     merkle_tree.push(tx_hashes);
 
-    let pool = ThreadPoolBuilder::new().num_threads(8).build().unwrap();
-
     // if the last level has more than 1 element, continue calculating
     while merkle_tree.last().unwrap().len() > 1 {
         let hashes = merkle_tree.last().unwrap();
         // println!("current level = {}, hashes = {:?}", merkle_tree.len() - 1, hashes);
-
-        let mut hashes_computed = make_txs(hashes.len() / 2); // pre-allocate the vector which will store the hash of 2 conbined hashes
-
-        for idx in (0..hashes.len()).step_by(2) {
-            let left_hash = hashes[idx].clone();
-            let right_hash = hashes[idx + 1].clone();
-            hashes_computed[idx / 2] = pool.install(move || -> Bit256 {
-                let combined_str = format!("{}{}", left_hash, right_hash);
-                let res = get_sha256(&combined_str);
-                res
-            });
-        }
+        let mut hashes_computed: Vec<String> = (0..(hashes.len() / 2)).into_par_iter().map( |idx| {
+            // combine each pair of hashes to generate new hash
+            let combined_str = format!("{}{}", hashes[idx * 2], hashes[idx * 2 + 1]);
+            get_sha256(&combined_str)
+        }).collect();
 
         // if the number of hashes is odd and greater than 1, duplicate the last hash
         hashes_computed = dupl_last_odd_list(hashes_computed);
